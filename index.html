@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="ar" dir="rtl"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>جرد العربيات · Car Check</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,Tahoma,Arial;background:#f3f4f6;color:#111}
+header{background:#1e3a8a;color:#fff;padding:12px 14px;font-weight:700;display:flex;justify-content:space-between}
+main{max-width:760px;margin:auto;padding:10px}section{background:#fff;border-radius:10px;padding:12px;margin-bottom:10px;box-shadow:0 1px 3px #0002}
+h3{margin:0 0 8px;font-size:16px}button{font:inherit;padding:10px 14px;border:0;border-radius:8px;background:#1e3a8a;color:#fff;margin:3px;cursor:pointer}
+button.g{background:#e5e7eb;color:#111}button.r{background:#b91c1c}button.ok{background:#15803d}
+input[type=text]{width:100%;font:inherit;font-size:20px;padding:10px;border:1px solid #9ca3af;border-radius:8px;text-align:center}
+.cam{position:relative}video{width:100%;background:#000;border-radius:8px;min-height:120px}
+.guide{position:absolute;left:10%;top:35%;width:80%;height:30%;border:3px solid #22c55e;border-radius:6px;pointer-events:none}
+.kb{display:flex;flex-wrap:wrap;gap:4px;justify-content:center;margin-top:8px;direction:rtl}
+.kb button{background:#e5e7eb;color:#111;min-width:40px;padding:9px 6px;font-size:18px;margin:0}
+.cand{display:flex;justify-content:space-between;align-items:center;border:1px solid #d1d5db;border-radius:8px;padding:8px;margin:5px 0}
+.cand b{font-size:18px;direction:rtl}.small{color:#555;font-size:13px}
+table{border-collapse:collapse;width:100%}td,th{border:1px solid #999;padding:5px 7px;text-align:right;vertical-align:top;font-size:13px}
+th{background:#e5e7eb}td.l{width:34%;background:#f3f4f6;font-weight:700}
+.toast{position:fixed;bottom:14px;left:50%;transform:translateX(-50%);background:#111;color:#fff;padding:10px 16px;border-radius:20px;display:none;z-index:9}
+#pa{display:none}
+@page{size:A4 landscape;margin:10mm}
+@media print{body>*:not(#pa){display:none!important}#pa{display:block}body{background:#fff}h2{margin:0 0 6px}.pb{page-break-before:always}}
+</style></head><body>
+<header><span>🚗 جرد العربيات · Car Check</span><span id="st" class="small" style="color:#bfdbfe"></span></header>
+<main>
+<section><h3>1) الشيت · Sheet (xlsx / csv)</h3>
+<input type="file" id="f" accept=".xlsx,.xls,.csv"><div id="sinfo" class="small"></div></section>
+
+<section><h3>2) الكاميرا · Camera</h3>
+<div class="cam"><video id="v" playsinline muted></video><div class="guide"></div></div>
+<div class="small">ضع اللوحة داخل الإطار الأخضر · Put the plate inside the green box</div>
+<button id="bcam">تشغيل الكاميرا · Start</button><button id="bshot" class="ok">📷 التقط · Capture</button>
+<div id="ocr" class="small"></div></section>
+
+<section><h3>3) كتابة / تصحيح · Type / Fix</h3>
+<input type="text" id="q" placeholder="ف ك ع 9187" autocomplete="off">
+<div class="kb" id="kb"></div><div id="cands"></div></section>
+
+<section id="repS" style="display:none"><h3>تقرير السيارة · Car Report</h3><div id="rep"></div>
+<button id="pr1">🖨️ PDF</button></section>
+
+<section><h3>4) الجرد · Inventory (<span id="cnt">0</span>)</h3><div id="list"></div>
+<button id="bx" class="ok">⬇️ Excel</button><button id="bp">🖨️ PDF</button><button id="bc" class="r">مسح الكل · Clear</button></section>
+</main>
+<div id="pa"></div><div class="toast" id="t"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js" crossorigin="anonymous"></script>
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const F=[['advisor','SERVICE_ADVISOR','مهندس الاستقبال','Service Advisor'],['leader','TEAM_LEADER','مهندس الورشة','Team Leader'],
+['incident','INCIDENT_NUMBER','رقم أمر الشغل','Work Order'],['vin','LOT_NUMBER','رقم الشاسيه','Chassis'],
+['date','RECEPTION_DATE','تاريخ الاستلام','Reception Date'],['model','MODEL','موديل السيارة','Model'],
+['notes','NOTES','ملاحظات تقفيل أمر الشغل','Closing Notes'],['status','JOB_STATUS','حالة أمر الشغل','Job Status']];
+const PL=['رقم اللوحة','Plate'];
+let db={},cap=[],cur=null;
+// storage
+const idb=new Promise((res,rej)=>{const r=indexedDB.open('cars',1);r.onupgradeneeded=()=>r.result.createObjectStore('k');r.onsuccess=()=>res(r.result);r.onerror=rej});
+const put=async(k,v)=>{const d=await idb;d.transaction('k','readwrite').objectStore('k').put(v,k)};
+const get=async k=>{const d=await idb;return new Promise(r=>{const q=d.transaction('k').objectStore('k').get(k);q.onsuccess=()=>r(q.result)})};
+const toast=m=>{const t=$('t');t.textContent=m;t.style.display='block';setTimeout(()=>t.style.display='none',2200)};
+// plate helpers
+const AD='٠١٢٣٤٥٦٧٨٩';
+const norm=s=>String(s||'').replace(/[٠-٩]/g,d=>AD.indexOf(d)).replace(/[أإآ]/g,'ا').replace(/ى/g,'ي').replace(/ة/g,'ه').replace(/[^0-9\u0621-\u064A]/g,'');
+const show=k=>k.replace(/\d/g,'').split('').join(' ')+' '+k.replace(/\D/g,'');
+function lev(a,b){const m=[...Array(a.length+1)].map((_,i)=>[i]);for(let j=1;j<=b.length;j++)m[0][j]=j;
+for(let i=1;i<=a.length;i++)for(let j=1;j<=b.length;j++)m[i][j]=Math.min(m[i-1][j]+1,m[i][j-1]+1,m[i-1][j-1]+(a[i-1]==b[j-1]?0:1));return m[a.length][b.length]}
+function cands(q,n){const qd=q.replace(/\D/g,''),ql=q.replace(/\d/g,'');
+return Object.keys(db).map(k=>({k,s:lev(qd,k.replace(/\D/g,''))*2+lev(ql,k.replace(/[0-9]/g,''))})).sort((a,b)=>a.s-b.s).slice(0,n)}
+// sheet
+function build(rows){const o={};for(const r of rows){const p=r.PLATE_NUMBER;const k=norm(p);if(!k)continue;
+const c=o[k]||(o[k]={plate:String(p).trim(),_s:{}});
+for(const [f,col] of F){let v=String(r[col]??'').trim();if(col==='SERVICE_ADVISOR')v=v.replace(/\s*\(.*?\)\s*/g,' ').trim();
+if(v)(c._s[f]??=new Set()).add(v)}}
+for(const c of Object.values(o)){for(const f in c._s)c[f]=[...c._s[f]].join(' | ');delete c._s}return o}
+$('f').onchange=async e=>{const file=e.target.files[0];if(!file)return;
+try{const wb=XLSX.read(await file.arrayBuffer(),{type:'array'});
+const rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{raw:false,defval:''});
+if(!rows.length||!('PLATE_NUMBER' in rows[0]))return alert('العمود PLATE_NUMBER غير موجود · PLATE_NUMBER column missing');
+db=build(rows);await put('db',db);info()}catch(x){alert('خطأ في قراءة الملف · '+x.message)}};
+const info=()=>$('sinfo').textContent=`✔ ${Object.keys(db).length} سيارة / cars (${Object.keys(db).length?'جاهز':''})`;
+// OCR
+let wk;async function worker(){if(!wk){wk=await Tesseract.createWorker(['ara','eng']);await wk.setParameters({tessedit_pageseg_mode:'6'})}return wk}
+let stream;
+$('bcam').onclick=async()=>{try{stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'},width:{ideal:1920}},audio:false});
+$('v').srcObject=stream;await $('v').play()}catch(e){alert('تعذر تشغيل الكاميرا · Camera error: '+e.message)}};
+$('bshot').onclick=async()=>{const v=$('v');if(!v.videoWidth)return toast('شغل الكاميرا أولا');
+const sw=v.videoWidth*.8,sh=v.videoHeight*.3,c=document.createElement('canvas');c.width=900;c.height=Math.round(900*sh/sw);
+const x=c.getContext('2d');x.drawImage(v,v.videoWidth*.1,v.videoHeight*.35,sw,sh,0,0,c.width,c.height);
+const im=x.getImageData(0,0,c.width,c.height),d=im.data;
+for(let i=0;i<d.length;i+=4){let g=.3*d[i]+.59*d[i+1]+.11*d[i+2];g=Math.max(0,Math.min(255,(g-128)*1.6+128));d[i]=d[i+1]=d[i+2]=g}
+x.putImageData(im,0,0);$('ocr').textContent='⏳ جاري القراءة... Reading...';
+try{const w=await worker();const r=await w.recognize(c);const k=norm(r.data.text);
+$('ocr').textContent='قرأت · Read: '+(k?show(k):'—');$('q').value=k?show(k):'';suggest()}catch(e){$('ocr').textContent='OCR error: '+e.message}};
+// manual
+const kb=$('kb');'ا ب ج د ر س ص ط ع ف ق ك ل م ن ه و ي 1 2 3 4 5 6 7 8 9 0 ⌫'.split(' ').forEach(ch=>{const b=document.createElement('button');b.textContent=ch;
+b.onclick=()=>{const q=$('q');q.value=ch==='⌫'?q.value.slice(0,-1):q.value+ch;suggest()};kb.appendChild(b)});
+$('q').oninput=suggest;
+function suggest(){const k=norm($('q').value),box=$('cands');box.innerHTML='';if(!k)return;
+cands(k,Object.keys(db).length?3:0).forEach(({k:ck})=>{const o=db[ck],d=document.createElement('div');d.className='cand';
+d.innerHTML=`<div><b>${esc(show(ck))}</b><div class="small">${esc(o.model||'')} · ${esc(o.incident||'')}</div></div>`;
+const b=document.createElement('button');b.className='ok';b.textContent='✔ اختيار';b.onclick=()=>add(ck,true);d.appendChild(b);box.appendChild(d)});
+const u=document.createElement('button');u.className='g';u.textContent=`➕ "${show(k)}" غير موجودة في الشيت · not in sheet`;u.onclick=()=>add(k,false);box.appendChild(u)}
+function add(k,found){if(cap.some(c=>c.key===k))toast('مكررة - تم تجاهلها · Duplicate');else{cap.push({key:k,found,t:Date.now()});put('cap',cap);toast('✔ تمت الإضافة')}
+cur=found?k:null;render();$('q').value='';$('cands').innerHTML='';$('ocr').textContent=''}
+// report
+const rowsOf=k=>{const o=db[k];return [[PL,show(k)],...F.map(([f,,a,e])=>[[a,e],o[f]||'—'])]};
+function render(){$('cnt').textContent=cap.length;const L=$('list');L.innerHTML='';
+cap.forEach((c,i)=>{const o=db[c.key]||{},d=document.createElement('div');d.className='cand';
+d.innerHTML=`<div><b>${esc(show(c.key))}</b><div class="small">${c.found?esc((o.model||'')+' · '+(o.status||'')):'⚠️ غير موجودة في الشيت · Not in sheet'}</div></div>`;
+const v=document.createElement('button');v.className='g';v.textContent='👁';v.onclick=()=>{cur=c.found?c.key:null;render();scrollTo(0,$('repS').offsetTop)};
+const x=document.createElement('button');x.className='r';x.textContent='✕';x.onclick=()=>{cap.splice(i,1);put('cap',cap);if(cur===c.key)cur=null;render()};
+d.append(v,x);L.appendChild(d)});
+$('repS').style.display=cur&&db[cur]?'block':'none';
+if(cur&&db[cur])$('rep').innerHTML='<table>'+rowsOf(cur).map(([l,v])=>`<tr><td class="l">${esc(l[0]||l)} · ${esc(l[1]||'')}</td><td>${esc(v)}</td></tr>`).join('')+'</table>'}
+// print
+function doPrint(h){$('pa').innerHTML=h;window.print()}
+$('pr1').onclick=()=>doPrint(`<h2>تقرير سيارة · Car Report — ${esc(show(cur))}</h2><table>`+rowsOf(cur).map(([l,v])=>`<tr><td class="l">${esc(l[0]||l)} · ${esc(l[1]||'')}</td><td>${esc(v)}</td></tr>`).join('')+'</table>');
+$('bp').onclick=()=>{if(!cap.length)return toast('الجرد فارغ');const f=cap.filter(c=>c.found),n=cap.filter(c=>!c.found),LIM=140;
+const cut=s=>s.length>LIM?s.slice(0,LIM)+'…':s;
+let h=`<h2>جرد العربيات · Inventory — ${new Date().toLocaleDateString('en-GB')} (${cap.length})</h2><table><tr><th>#</th><th>${PL[0]}</th>`+F.map(x=>`<th>${x[2]}<br>${x[3]}</th>`).join('')+'</tr>';
+f.forEach((c,i)=>{const o=db[c.key];h+=`<tr><td>${i+1}</td><td><b>${esc(show(c.key))}</b></td>`+F.map(([k])=>`<td>${esc(k==='notes'?cut(o[k]||''):o[k]||'')}</td>`).join('')+'</tr>'});
+h+='</table>';
+if(n.length)h+=`<h2 style="margin-top:14px">غير موجودة في الشيت · Not in sheet</h2><table>`+n.map(c=>`<tr><td>${esc(show(c.key))}</td></tr>`).join('')+'</table>';
+const long=f.filter(c=>(db[c.key].notes||'').length>LIM);
+if(long.length)h+=`<div class="pb"><h2>الملاحظات الكاملة · Full Notes</h2><table>`+long.map(c=>`<tr><td class="l">${esc(show(c.key))}</td><td>${esc(db[c.key].notes)}</td></tr>`).join('')+'</table></div>';
+doPrint(h)};
+// excel
+$('bx').onclick=()=>{if(!cap.length)return toast('الجرد فارغ');const H=[PL[0]+' / '+PL[1],...F.map(x=>x[2]+' / '+x[3])];
+const a=[H,...cap.filter(c=>c.found).map(c=>[show(c.key),...F.map(([k])=>db[c.key][k]||'')])];
+const ws=XLSX.utils.aoa_to_sheet(a);ws['!cols']=H.map((_,i)=>({wch:i===7?60:20}));
+const n=cap.filter(c=>!c.found).map(c=>[show(c.key)]);const w2=XLSX.utils.aoa_to_sheet([['غير موجودة في الشيت / Not in sheet'],...n]);w2['!cols']=[{wch:36}];
+const wb=XLSX.utils.book_new();wb.Workbook={Views:[{RTL:true}]};XLSX.utils.book_append_sheet(wb,ws,'Inventory');XLSX.utils.book_append_sheet(wb,w2,'Not in sheet');
+XLSX.writeFile(wb,'cars-inventory-'+new Date().toISOString().slice(0,10)+'.xlsx')};
+$('bc').onclick=()=>{if(confirm('مسح كل الجرد؟ Clear all?')){cap=[];cur=null;put('cap',cap);render()}};
+// init
+(async()=>{db=(await get('db'))||{};cap=(await get('cap'))||[];if(Object.keys(db).length)info();render();
+if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
+if(navigator.onLine)worker().then(()=>$('st').textContent='OCR ✔ offline-ready').catch(()=>{});else $('st').textContent='offline'})();
+</script></body></html>
